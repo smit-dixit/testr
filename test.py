@@ -10,7 +10,8 @@ from yaml.loader import SafeLoader
 import base64
 import requests
 import random
-from datetime import datetime
+import hashlib
+from datetime import datetime,timedelta
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Spacer
 from reportlab.lib import colors
@@ -56,10 +57,22 @@ except FileNotFoundError:
 # Display all columns
 pd.set_option('display.max_columns', None)
 
-
+def reset_password(username):
+    st.title("Reset Password")
+    new_password = st.text_input("Enter your new password", type="password")
+    confirm_password = st.text_input("Confirm new password", type="password")
+    if st.button("Reset"):
+        if new_password == confirm_password:
+            # Update password in database
+            hashed_password = hashlib.sha256(new_password.encode()).hexdigest()  # Hash new password
+            update_password(username, hashed_password)
+            st.success("Password successfully reset.")
+        else:
+            st.error("Passwords do not match.")
 
 # Login
 name, authentication_status, username = authenticator.login()
+
 
 def generate_pdf_report(start_date=None, end_date=None, title='Madhur Dairy Coupon Report'):
     c_df = pd.read_pickle('coupon.pkl')
@@ -70,6 +83,13 @@ def generate_pdf_report(start_date=None, end_date=None, title='Madhur Dairy Coup
     table_data = [[Paragraph(str(val), getSampleStyleSheet()["BodyText"]) for val in c_df.columns]]  # Header row
     for _, row in c_df.iterrows():
         table_data.append([Paragraph(str(val), getSampleStyleSheet()["BodyText"]) for val in row])
+
+    # Calculate totals
+    price_total = c_df.iloc[:, -2].sum()  # Assuming 'Rupees of Item' is the second-last column
+    total_row = ['Total:', '', '', '', '', '', price_total]  # Add empty strings for other columns
+
+    # Add total row to table data
+    table_data.append([Paragraph(str(val), getSampleStyleSheet()["BodyText"]) for val in total_row])
 
     # Create a PDF document
     pdf_buffer = BytesIO()
@@ -87,7 +107,7 @@ def generate_pdf_report(start_date=None, end_date=None, title='Madhur Dairy Coup
                         ('ALIGN', (0,0), (-1,-1), 'CENTER'),
                         ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
                         ('BOTTOMPADDING', (0,0), (-1,0), 12),
-                        ('BACKGROUND', (0,1), (-1,-1), colors.beige),
+                        ('BACKGROUND', (0,1), (-1,-2), colors.beige),  # Exclude total row from background color
                         ('GRID', (0,0), (-1,-1), 1, colors.black)])
     table.setStyle(style)
 
@@ -100,12 +120,7 @@ def generate_pdf_report(start_date=None, end_date=None, title='Madhur Dairy Coup
     
     return pdf_bytes
 
-coupons_data = {
-    'Date': pd.date_range(start='2024-04-17', end='2024-04-23'),
-    'Generated': np.random.randint(50, 70, 7),
-    'Redeemed': np.random.randint(20, 50, 7)
-}
-coupons_df = pd.DataFrame(coupons_data)
+coupons_df = pd.read_pickle('coupon.pkl')
 
 def company_header():
     st.markdown(
@@ -128,16 +143,29 @@ def company_header():
         
 # Function to plot line graph
 def plot_line_graph(data):
-    fig = plt.figure(figsize=(10, 3))
-    plt.plot(data['Date'], data['Redeemed'], marker='o', linestyle='-', label='Redeemed')
-    plt.plot(data['Date'], data['Generated'], marker='o', linestyle='-', label='Generated')
-    plt.title('Daily Coupons Redeemed')
-    plt.xlabel('Date')
-    plt.ylabel('Coupons Redeemed')
-    plt.grid(True)
-    plt.legend()
-    plt.xticks(rotation=45)
-    st.pyplot(fig)
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    data['Date'] = pd.to_datetime(data['Date'])
+    
+    # Filter data for last week
+    end_date = data['Date'].max()
+    start_date = end_date - timedelta(days=6)
+    data_last_week = data[(data['Date'] >= start_date) & (data['Date'] <= end_date)]
+    
+    redeemed_counts = data_last_week.groupby('Date')['Redeemed'].sum().reset_index()
+    generated_counts = data_last_week.groupby('Date').size().reset_index(name='Generated')
+    
+    ax.plot(redeemed_counts['Date'], redeemed_counts['Redeemed'], marker='o', linestyle='-', label='Redeemed')
+    ax.plot(generated_counts['Date'], generated_counts['Generated'], marker='o', linestyle='-', label='Generated')
+    
+    ax.set_title('Daily Coupons Generated and Redeemed (Last Week)')
+    ax.set_xlabel('Date')
+    ax.set_ylabel('Number of Coupons')
+    ax.grid(True)
+    ax.legend()
+    ax.tick_params(axis='x', rotation=45)
+    plt.tight_layout()
+    return fig
 
 # Admin dashboard home page
 def admin_dashboard_home():
@@ -145,16 +173,25 @@ def admin_dashboard_home():
     st.title('Home')
     # Layout for dividing the page into two parts
     col1, col2 = st.columns([0.25, 1])
-
-    # First part: Coupons generated and redeemed data
+    
     with col1:
         st.write("## Coupons Overview")
-        generated_total = coupons_df['Generated'].sum()
-        redeemed_total = coupons_df['Redeemed'].sum()
+        coupons_df['Date'] = pd.to_datetime(coupons_df['Date'])
+
+        # Calculate the start and end dates of the last week
+        end_date = coupons_df['Date'].max()
+        start_date = end_date - timedelta(days=6)
+
+        # Filter the DataFrame for last week's data
+        last_week_data = coupons_df[(coupons_df['Date'] >= start_date) & (coupons_df['Date'] <= end_date)]
+
+        # Calculate total generated and redeemed coupons for last week
+        generated_total = last_week_data.shape[0]  # Total number of rows
+        redeemed_total = last_week_data['Redeemed'].sum()
 
         # Display coupons generated and redeemed with small green arrows
-        st.metric(label='Coupons Generated', value = generated_total, delta = 35)
-        st.metric(label='Coupons Redeemed', value = redeemed_total, delta = -7)
+        st.metric(label='Coupons Generated', value = generated_total)
+        st.metric(label='Coupons Redeemed', value = redeemed_total)
         st.metric(label='No. of Employees', value = 3)
         #st.write(f"**Coupons Generated:** {generated_total}")
         #st.write(f"**Coupons Redeemed:** {redeemed_total}")
@@ -163,7 +200,8 @@ def admin_dashboard_home():
  # Second part: Line graph of daily coupons redeemed for past week
     with col2:
         st.write("## Daily Coupons Redeemed (Past Week)")
-        plot_line_graph(coupons_df)
+        fig = plot_line_graph(coupons_df)
+        st.pyplot(fig)
     
 
 # Admin dashboard function
@@ -177,7 +215,8 @@ def admin_dashboard():
     start_date = st.sidebar.date_input("Start Date")
     end_date = st.sidebar.date_input("End Date")
     
-    
+    def hash_password(password):
+      return hashlib.sha256(password.encode()).hexdigest()
 
     # Button to generate PDF report
     if st.sidebar.button("Generate PDF"):
@@ -215,6 +254,10 @@ def admin_dashboard():
         edited_users = st.data_editor(df_transposed, num_rows="dynamic")
         
         if st.button('Save', key="unique5"):
+        
+            for index, row in edited_users.iterrows():
+                if row['password'] != edited_users.loc[index, 'password']:  # Check for password change
+                    row['password'] = hash_password(row['password'])  # Hash password if changed
             # Check if there are new users added
             new_users = edited_users.index.difference(df_transposed.index)
             
@@ -351,7 +394,7 @@ def user_dashboard():
         last_coupon_code = c_df['Coupon unique code no.'].iloc[-1]
         last_coupon_num = int(last_coupon_code[1:])
         new_coupon_num = last_coupon_num + 1
-        new_coupon_code = f'C{new_coupon_num:03d}'
+        new_coupon_code = ''.join(str(random.randint(0, 9)) for _ in range(5))
         
         # Get current date and time
         current_date = datetime.now().strftime('%Y-%m-%d')
@@ -393,14 +436,13 @@ def user_dashboard():
 
         response = requests.request("GET", url, headers=headers, params=querystring)
         
-
+        st.title("Temporary Code:" + new_coupon_code)
         st.success("OTP sent to Employee")
-        st.rerun()
 
     
 def user2_dashboard():
     st.write("Welcome to the Operator Dashboard")
-    otp_input = st.text_input("Enter OTP")
+    otp_input = st.text_input("Enter OTP/Temporary Code")
 
     st.sidebar.title("Generate Report")
     start_date = st.sidebar.date_input("Start Date")
@@ -414,14 +456,20 @@ def user2_dashboard():
         st.sidebar.success("PDF report generated successfully!")
         
     # Button to fetch details associated with OTP
-    if st.button("Fetch Details"):
-        # Read coupon data
-        try:
-            coupon_data = pd.read_pickle('coupon.pkl')
-            # Check if OTP exists in the coupon data
-            if otp_input in coupon_data['OTP'].values:
-                # Retrieve details associated with OTP
-                otp_details = coupon_data[coupon_data['OTP'] == otp_input].iloc[0]
+    if st.button("Redeem", key="unique8"):
+        # Check if OTP exists in the coupon data
+        if (otp_input in coupons_df['OTP'].values) | (otp_input in coupons_df['Coupon unique code no.'].values):
+            # Retrieve details associated with OTP
+            if otp_input in coupons_df['OTP'].values:
+                otp_details = coupons_df[coupons_df['OTP'] == otp_input].iloc[0]
+                otp_index = coupons_df.index[coupons_df['OTP'] == otp_input].tolist()[0]
+            # Otherwise, retrieve details based on Unique Code
+            else:
+                otp_details = coupons_df[coupons_df['Coupon unique code no.'] == otp_input].iloc[0]
+                otp_index = coupons_df.index[coupons_df['Coupon unique code no.'] == otp_input].tolist()[0]
+            redeemed_status = otp_details['Redeemed']
+            # Check if the coupon has already been redeemed
+            if not redeemed_status:
                 employee_name = otp_details['Employee name']
                 dish_type = otp_details['Type of dish']
                 amount = otp_details['Rupees of items']
@@ -430,23 +478,30 @@ def user2_dashboard():
                 st.write(f"Employee Name: {employee_name}")
                 st.write(f"Type of Dish: {dish_type}")
                 st.write(f"Amount: {amount}")
-                if st.button("Redeem"):
-                    st.success('Coupon Redeemed')
+
+                # Update redeemed status in coupon data
+                coupons_df.at[otp_index, 'Redeemed'] = True
+
+                # Write updated coupon data back to file
+                coupons_df.to_pickle('coupon.pkl')
+                st.success('Coupon Redeemed')
             else:
-                st.error("Invalid OTP. Please try again.")
-        except FileNotFoundError:
-            st.error("Coupon data not found. Please generate some coupons first.")
+                st.warning("Coupon already redeemed.")
+        else:
+            st.error("Invalid OTP. Please try again.")
+        
+
 
 # Display dashboard if authenticated
 if authentication_status:
     company_header()
     authenticator.logout('Logout', 'sidebar', 'my_crazy_random_signature_key')
       
-    if username == 'admin':
+    if username.startswith('ad'):
         admin_dashboard()
-    elif username == 'operator':
+    elif username.startswith('op'):
         user2_dashboard()
-    elif username == 'timekeeper':
+    elif username.startswith('ti'):
         user_dashboard()
 
 st.markdown("""
